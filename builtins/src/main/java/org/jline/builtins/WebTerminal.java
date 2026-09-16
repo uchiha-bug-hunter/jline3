@@ -14,6 +14,7 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -305,7 +306,7 @@ public class WebTerminal extends LineDisciplineTerminal {
                 return;
             }
 
-            if (!isSameOrigin(exchange)) {
+            if (!isTrustedHost(exchange) || !isSameOrigin(exchange)) {
                 exchange.sendResponseHeaders(403, -1);
                 return;
             }
@@ -366,6 +367,54 @@ public class WebTerminal extends LineDisciplineTerminal {
                 return false;
             }
             return authority != null && host.equalsIgnoreCase(authority);
+        }
+
+        /**
+         * Tells whether the {@code Host} header names this server rather than a foreign DNS name.
+         * <p>
+         * {@link #isSameOrigin} compares two values the browser derives from the URL it loaded, so
+         * it accepts a page served from an attacker's domain once that domain's DNS record is
+         * repointed at the loopback address (DNS rebinding): the browser then reaches this port
+         * with {@code Origin} and {@code Host} both carrying the attacker's name. An IP literal
+         * cannot be rebound, {@code localhost} always resolves to the loopback interface, and the
+         * bind address is the name this server was started under; any other host name is refused.
+         * </p>
+         */
+        private boolean isTrustedHost(HttpExchange exchange) {
+            String hostHeader = exchange.getRequestHeaders().getFirst("Host");
+            if (hostHeader == null) {
+                return false;
+            }
+            String name = hostHeader.trim();
+            // Drop the port: "[::1]:8080" keeps its brackets, "localhost:8080" stops at the colon.
+            int end = name.startsWith("[") ? name.indexOf(']') + 1 : name.indexOf(':');
+            if (end > 0) {
+                name = name.substring(0, end);
+            }
+            if (name.isEmpty()) {
+                return false;
+            }
+            String lower = name.toLowerCase(Locale.ROOT);
+            return lower.equals("localhost")
+                    || lower.endsWith(".localhost")
+                    || name.equalsIgnoreCase(host)
+                    || isIpLiteral(name);
+        }
+
+        /**
+         * IPv4 literals are digits and dots; browsers send IPv6 literals in brackets.
+         */
+        private boolean isIpLiteral(String name) {
+            if (name.startsWith("[")) {
+                return name.length() > 2 && name.endsWith("]");
+            }
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (c != '.' && (c < '0' || c > '9')) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private Map<String, String> parseFormData(HttpExchange exchange) throws IOException {

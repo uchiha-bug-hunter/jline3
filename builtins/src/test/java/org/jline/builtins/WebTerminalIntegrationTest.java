@@ -368,6 +368,50 @@ class WebTerminalIntegrationTest {
         assertEquals("hi", readLine.get());
     }
 
+    @Test
+    void testForeignHostHeaderIsRejected() throws Exception {
+        // After a DNS rebinding flip the browser reaches this server with Origin and Host both
+        // carrying the attacker's name, so comparing the two accepts the request. Only a Host
+        // that names this server (IP literal, localhost, bind address) may drive the session.
+        CountDownLatch readerReady = new CountDownLatch(1);
+        CountDownLatch lineRead = new CountDownLatch(1);
+        AtomicReference<String> readLine = new AtomicReference<>();
+
+        Thread readerThread = new Thread(() -> {
+            try {
+                LineReader reader =
+                        LineReaderBuilder.builder().terminal(terminal).build();
+                readerReady.countDown();
+                String line = reader.readLine("$ ");
+                readLine.set(line);
+                lineRead.countDown();
+            } catch (Exception e) {
+                // terminal closed
+            }
+        });
+        readerThread.setDaemon(true);
+        readerThread.start();
+
+        assertTrue(readerReady.await(5, TimeUnit.SECONDS));
+        awaitPrompt();
+
+        String port = ":" + new URL(baseUrl).getPort();
+        assertEquals(403, post("k=" + urlEncode("x"), "evil.example" + port, "http://evil.example" + port));
+        assertEquals(403, post("k=" + urlEncode("\r"), "evil.example" + port, "http://evil.example" + port));
+        // The Host check does not depend on Origin being present.
+        assertEquals(403, post("k=" + urlEncode("x"), "evil.example" + port, null));
+
+        assertFalse(lineRead.await(1, TimeUnit.SECONDS), "Keys under a foreign Host must not reach the reader");
+
+        // Names that cannot be rebound keep working.
+        assertEquals(200, post("k=" + urlEncode("h"), "localhost" + port, "http://localhost" + port));
+        assertEquals(200, post("k=" + urlEncode("i"), "127.0.0.1" + port, "http://127.0.0.1" + port));
+        assertEquals(200, post("k=" + urlEncode("\r"), "[::1]" + port, "http://[::1]" + port));
+
+        assertTrue(lineRead.await(5, TimeUnit.SECONDS), "Keys under a trusted Host should reach the reader");
+        assertEquals("hi", readLine.get());
+    }
+
     /**
      * Helper: POST form data to the /terminal endpoint carrying an Origin header, as a browser
      * does for a cross-site form submission, and return the status code. HttpURLConnection
@@ -375,17 +419,29 @@ class WebTerminalIntegrationTest {
      */
     private int postWithOrigin(String formData, String origin) throws IOException {
         URL url = new URL(baseUrl);
+        return post(formData, url.getHost() + ":" + url.getPort(), origin);
+    }
+
+    /**
+     * Helper: POST form data to the /terminal endpoint with the given Host header and, when
+     * non-null, Origin header, and return the status code.
+     */
+    private int post(String formData, String hostHeader, String origin) throws IOException {
+        URL url = new URL(baseUrl);
         byte[] body = formData.getBytes(StandardCharsets.UTF_8);
-        String authority = url.getHost() + ":" + url.getPort();
-        String request = "POST /terminal HTTP/1.1\r\n" + "Host: "
-                + authority + "\r\n" + "Origin: "
-                + origin + "\r\n" + "Content-Type: application/x-www-form-urlencoded\r\n" + "Content-Length: "
-                + body.length + "\r\n" + "Connection: close\r\n\r\n";
+        StringBuilder request = new StringBuilder("POST /terminal HTTP/1.1\r\n");
+        request.append("Host: ").append(hostHeader).append("\r\n");
+        if (origin != null) {
+            request.append("Origin: ").append(origin).append("\r\n");
+        }
+        request.append("Content-Type: application/x-www-form-urlencoded\r\n");
+        request.append("Content-Length: ").append(body.length).append("\r\n");
+        request.append("Connection: close\r\n\r\n");
 
         try (Socket socket = new Socket(url.getHost(), url.getPort())) {
             socket.setSoTimeout(5000);
             OutputStream os = socket.getOutputStream();
-            os.write(request.getBytes(StandardCharsets.US_ASCII));
+            os.write(request.toString().getBytes(StandardCharsets.US_ASCII));
             os.write(body);
             os.flush();
 
