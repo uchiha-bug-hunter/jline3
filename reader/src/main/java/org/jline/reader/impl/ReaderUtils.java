@@ -179,36 +179,42 @@ public class ReaderUtils {
         } catch (UnsupportedOperationException e) {
             // Non-POSIX file system (e.g. Windows): create with owner-only ACL at creation time
             // to eliminate the TOCTOU race between file creation and permission restriction.
-            UserPrincipal owner = FileSystems.getDefault()
-                    .getUserPrincipalLookupService()
-                    .lookupPrincipalByName(System.getProperty("user.name"));
-            AclEntry ownerOnly = AclEntry.newBuilder()
-                    .setType(AclEntryType.ALLOW)
-                    .setPrincipal(owner)
-                    .setPermissions(
-                            AclEntryPermission.READ_DATA,
-                            AclEntryPermission.WRITE_DATA,
-                            AclEntryPermission.APPEND_DATA,
-                            AclEntryPermission.READ_ATTRIBUTES,
-                            AclEntryPermission.WRITE_ATTRIBUTES,
-                            AclEntryPermission.READ_NAMED_ATTRS,
-                            AclEntryPermission.WRITE_NAMED_ATTRS,
-                            AclEntryPermission.READ_ACL,
-                            AclEntryPermission.SYNCHRONIZE,
-                            AclEntryPermission.DELETE)
-                    .build();
-            FileAttribute<List<AclEntry>> aclAttr = new FileAttribute<>() {
-                @Override
-                public String name() {
-                    return "acl:acl";
-                }
+            try {
+                UserPrincipal owner = FileSystems.getDefault()
+                        .getUserPrincipalLookupService()
+                        .lookupPrincipalByName(System.getProperty("user.name"));
+                AclEntry ownerOnly = AclEntry.newBuilder()
+                        .setType(AclEntryType.ALLOW)
+                        .setPrincipal(owner)
+                        .setPermissions(
+                                AclEntryPermission.READ_DATA,
+                                AclEntryPermission.WRITE_DATA,
+                                AclEntryPermission.APPEND_DATA,
+                                AclEntryPermission.READ_ATTRIBUTES,
+                                AclEntryPermission.WRITE_ATTRIBUTES,
+                                AclEntryPermission.READ_NAMED_ATTRS,
+                                AclEntryPermission.WRITE_NAMED_ATTRS,
+                                AclEntryPermission.READ_ACL,
+                                AclEntryPermission.SYNCHRONIZE,
+                                AclEntryPermission.DELETE)
+                        .build();
+                FileAttribute<List<AclEntry>> aclAttr = new FileAttribute<>() {
+                    @Override
+                    public String name() {
+                        return "acl:acl";
+                    }
 
-                @Override
-                public List<AclEntry> value() {
-                    return Collections.singletonList(ownerOnly);
-                }
-            };
-            return Files.createTempFile(prefix, suffix, aclAttr).toFile();
+                    @Override
+                    public List<AclEntry> value() {
+                        return Collections.singletonList(ownerOnly);
+                    }
+                };
+                return Files.createTempFile(prefix, suffix, aclAttr).toFile();
+            } catch (UnsupportedOperationException uoe) {
+                throw new IOException(
+                        "Cannot create secure temporary file: filesystem supports neither POSIX nor ACL attributes",
+                        uoe);
+            }
         }
         return verifyPosixPermissions(tmp);
     }
